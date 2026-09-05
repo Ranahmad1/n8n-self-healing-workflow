@@ -1,0 +1,248 @@
+{
+  "name": "Self-Healing Workflow — by Rana Ahmad",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "node-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.target_url || 'https://httpstat.us/200' }}",
+        "method": "GET",
+        "options": {
+          "timeout": 10000,
+          "response": { "response": { "responseFormat": "json" } }
+        }
+      },
+      "id": "node-http",
+      "name": "HTTP Request Node",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [460, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [{
+            "value1": "={{ $json.error !== undefined || ($json.statusCode && $json.statusCode >= 400) }}",
+            "value2": true
+          }]
+        }
+      },
+      "id": "node-error-check",
+      "name": "Error Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== ERROR CATCHER =====\n// Captures full error context from the failed node\n// Author: Rana Ahmad — github.com/Ranahmad1\n\nconst item = $input.first();\nconst error = item.json.error || {};\nconst statusCode = error.statusCode || error.httpCode || item.json.statusCode || 0;\nconst errorMessage = error.message || item.json.message || JSON.stringify(error);\n\nconst errorContext = {\n  timestamp: new Date().toISOString(),\n  execution_id: $execution.id,\n  workflow_id: $workflow.id,\n  workflow_name: $workflow.name,\n  failed_node: item.json.failed_node || 'HTTP Request Node',\n  error_raw: error,\n  error_message: errorMessage,\n  status_code: statusCode,\n  retry_count: item.json.retry_count || 0,\n  original_input: item.json.original_input || item.json\n};\n\nconsole.log('ERROR_CAUGHT:', JSON.stringify({ node: errorContext.failed_node, status: errorContext.status_code, msg: errorContext.error_message }));\n\nreturn [{ json: errorContext }];"
+      },
+      "id": "node-error-catcher",
+      "name": "Error Catcher",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== ROOT CAUSE ANALYZER =====\n// Classifies error type and determines risk level\n// Author: Rana Ahmad — github.com/Ranahmad1\n\nconst ctx = $input.first().json;\nconst msg = (ctx.error_message || '').toLowerCase();\nconst code = parseInt(ctx.status_code) || 0;\n\nlet errorType = 'UNKNOWN';\nlet rootCause = 'Unknown error occurred';\nlet riskLevel = 'LOW';\n\nif (code === 429 || msg.includes('rate limit') || msg.includes('too many requests')) {\n  errorType = 'RATE_LIMIT';\n  rootCause = 'API rate limit exceeded — too many requests in a short window';\n  riskLevel = 'LOW';\n} else if (code >= 500 && code < 600) {\n  errorType = 'SERVER_ERROR';\n  rootCause = `Upstream server error (HTTP ${code}) — transient server-side failure`;\n  riskLevel = 'LOW';\n} else if (code === 401 || code === 403) {\n  errorType = 'AUTH_ERROR';\n  rootCause = `Authentication failed (HTTP ${code}) — credentials invalid or expired`;\n  riskLevel = 'HIGH';\n} else if (code === 404) {\n  errorType = 'NOT_FOUND';\n  rootCause = 'Resource not found — endpoint or record may have been removed';\n  riskLevel = 'LOW';\n} else if (msg.includes('etimedout') || msg.includes('timeout') || msg.includes('econnaborted') || code === 408) {\n  errorType = 'TIMEOUT';\n  rootCause = 'Request timed out — network latency or slow server response';\n  riskLevel = 'LOW';\n} else if (msg.includes('econnrefused') || msg.includes('connection refused')) {\n  errorType = 'CONNECTION_REFUSED';\n  rootCause = 'Connection refused — target service is down or unreachable';\n  riskLevel = 'LOW';\n} else if (msg.includes('enotfound') || msg.includes('dns')) {\n  errorType = 'DNS_ERROR';\n  rootCause = 'DNS resolution failed — hostname cannot be resolved';\n  riskLevel = 'LOW';\n} else if (msg.includes('invalid') || msg.includes('null') || msg.includes('undefined') || msg.includes('cannot read')) {\n  errorType = 'INVALID_DATA';\n  rootCause = 'Invalid or null data received — schema mismatch or missing required fields';\n  riskLevel = 'LOW';\n} else if (code >= 400 && code < 500) {\n  errorType = 'CLIENT_ERROR';\n  rootCause = `Client-side error (HTTP ${code}) — bad request format or missing parameters`;\n  riskLevel = 'MEDIUM';\n}\n\nconsole.log('ROOT_CAUSE:', JSON.stringify({ type: errorType, risk: riskLevel, cause: rootCause }));\n\nreturn [{ json: { ...ctx, error_type: errorType, root_cause: rootCause, risk_level: riskLevel } }];"
+      },
+      "id": "node-root-cause",
+      "name": "Root Cause Analyzer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== STRATEGY GENERATOR =====\n// Generates a specific, parameterized recovery strategy\n// Author: Rana Ahmad — github.com/Ranahmad1\n\nconst ctx = $input.first().json;\nconst BASE_DELAY = 1000;\nconst MULTIPLIER = 2;\nconst MAX_DELAY = 30000;\nconst MAX_RETRIES = 3;\n\nconst retryCount = ctx.retry_count || 0;\nconst delay = Math.min(BASE_DELAY * Math.pow(MULTIPLIER, retryCount), MAX_DELAY);\nconst jitter = Math.floor(Math.random() * 500);\nconst delayWithJitter = delay + jitter;\n\nlet strategy = {\n  type: 'HUMAN_ESCALATION',\n  can_auto_recover: false,\n  retry_after_ms: 0,\n  max_retries: MAX_RETRIES,\n  current_attempt: retryCount + 1,\n  action: 'Escalate to human — no safe automatic recovery available',\n  parameters: {}\n};\n\nswitch (ctx.error_type) {\n  case 'RATE_LIMIT':\n    strategy = {\n      type: 'EXPONENTIAL_BACKOFF',\n      can_auto_recover: retryCount < MAX_RETRIES,\n      retry_after_ms: delayWithJitter,\n      max_retries: MAX_RETRIES,\n      current_attempt: retryCount + 1,\n      action: `Wait ${delayWithJitter}ms then retry (exponential backoff, attempt ${retryCount + 1}/${MAX_RETRIES})`,\n      parameters: { delay_ms: delayWithJitter, reduce_concurrency: true }\n    };\n    break;\n\n  case 'SERVER_ERROR':\n    strategy = {\n      type: 'RETRY_WITH_DELAY',\n      can_auto_recover: retryCount < MAX_RETRIES,\n      retry_after_ms: delayWithJitter,\n      max_retries: MAX_RETRIES,\n      current_attempt: retryCount + 1,\n      action: `Wait ${delayWithJitter}ms then retry — server may have recovered`,\n      parameters: { delay_ms: delayWithJitter }\n    };\n    break;\n\n  case 'TIMEOUT':\n    strategy = {\n      type: 'RETRY_WITH_INCREASED_TIMEOUT',\n      can_auto_recover: retryCount < MAX_RETRIES,\n      retry_after_ms: 2000,\n      max_retries: MAX_RETRIES,\n      current_attempt: retryCount + 1,\n      action: 'Retry with 2x timeout limit applied',\n      parameters: { new_timeout_ms: 20000, delay_ms: 2000 }\n    };\n    break;\n\n  case 'CONNECTION_REFUSED':\n    strategy = {\n      type: 'RETRY_AFTER_LONG_WAIT',\n      can_auto_recover: retryCount < 2,\n      retry_after_ms: 30000,\n      max_retries: 2,\n      current_attempt: retryCount + 1,\n      action: 'Wait 30 seconds for service to come back online, then retry',\n      parameters: { delay_ms: 30000 }\n    };\n    break;\n\n  case 'INVALID_DATA':\n    strategy = {\n      type: 'USE_FALLBACK_DATA',\n      can_auto_recover: true,\n      retry_after_ms: 0,\n      max_retries: 0,\n      current_attempt: 1,\n      action: 'Sanitize input data and apply fallback values for null/invalid fields',\n      parameters: { sanitize: true, use_defaults: true }\n    };\n    break;\n\n  case 'NOT_FOUND':\n    strategy = {\n      type: 'LOG_AND_SKIP',\n      can_auto_recover: true,\n      retry_after_ms: 0,\n      max_retries: 0,\n      current_attempt: 1,\n      action: 'Log the missing resource and skip — continue processing remaining items',\n      parameters: { skip: true }\n    };\n    break;\n\n  case 'DNS_ERROR':\n    strategy = {\n      type: 'RETRY_WITH_DELAY',\n      can_auto_recover: retryCount < 2,\n      retry_after_ms: 5000,\n      max_retries: 2,\n      current_attempt: retryCount + 1,\n      action: 'Wait 5s for DNS to propagate, then retry',\n      parameters: { delay_ms: 5000 }\n    };\n    break;\n\n  case 'AUTH_ERROR':\n  case 'CLIENT_ERROR':\n  default:\n    // Keep default HUMAN_ESCALATION strategy\n    break;\n}\n\nconsole.log('STRATEGY:', JSON.stringify({ type: strategy.type, canRecover: strategy.can_auto_recover, delay: strategy.retry_after_ms }));\n\nreturn [{ json: { ...ctx, recovery_strategy: strategy } }];"
+      },
+      "id": "node-strategy",
+      "name": "Strategy Generator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 420]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.risk_level }}",
+              "operation": "notEqual",
+              "value2": "HIGH"
+            }
+          ],
+          "boolean": [
+            {
+              "value1": "={{ $json.recovery_strategy.can_auto_recover }}",
+              "value2": true
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "node-safety-check",
+      "name": "Safety Validator",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1560, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== HUMAN ESCALATION =====\n// Builds alert payload and logs for human review\n// Author: Rana Ahmad — github.com/Ranahmad1\n\nconst ctx = $input.first().json;\n\nconst alertPayload = {\n  alert_type: 'WORKFLOW_REQUIRES_HUMAN_APPROVAL',\n  timestamp: new Date().toISOString(),\n  workflow: ctx.workflow_name,\n  failed_node: ctx.failed_node,\n  error_type: ctx.error_type,\n  root_cause: ctx.root_cause,\n  risk_level: ctx.risk_level,\n  proposed_strategy: ctx.recovery_strategy?.action,\n  retry_count: ctx.retry_count,\n  message: `⚠️ HUMAN APPROVAL REQUIRED\\n\\nWorkflow: ${ctx.workflow_name}\\nNode: ${ctx.failed_node}\\nError: ${ctx.error_type}\\nCause: ${ctx.root_cause}\\nRisk Level: ${ctx.risk_level}\\nAttempts: ${ctx.retry_count}\\nProposed Fix: ${ctx.recovery_strategy?.action}\\n\\nPlease review and take action.`,\n  execution_id: ctx.execution_id\n};\n\nconsole.log('HUMAN_ESCALATION_REQUIRED:', JSON.stringify(alertPayload, null, 2));\n\n// Production: Add HTTP Request node after this to POST to ALERT_WEBHOOK_URL\n// e.g. Slack, PagerDuty, email, MS Teams\n\nreturn [{ json: { ...ctx, escalation: alertPayload, status: 'AWAITING_HUMAN_APPROVAL' } }];"
+      },
+      "id": "node-human-escalation",
+      "name": "Human Escalation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 280]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== RETRY ENGINE =====\n// Prepares retry payload with modified parameters\n// Author: Rana Ahmad — github.com/Ranahmad1\n\nconst ctx = $input.first().json;\nconst strategy = ctx.recovery_strategy;\n\nif (!strategy.can_auto_recover) {\n  return [{ json: {\n    ...ctx,\n    status: 'ESCALATED',\n    outcome: 'Max retries reached or unsafe — escalated to human',\n    logged_at: new Date().toISOString()\n  }}];\n}\n\nconst retryPayload = {\n  ...ctx,\n  retry_count: (ctx.retry_count || 0) + 1,\n  strategy_applied: strategy.type,\n  retry_at: new Date(Date.now() + strategy.retry_after_ms).toISOString(),\n  status: 'RETRYING',\n  retry_config: {\n    url: ctx.original_input?.target_url || 'https://httpstat.us/200',\n    timeout: strategy.parameters?.new_timeout_ms || 10000,\n    delay_ms: strategy.retry_after_ms\n  }\n};\n\nconsole.log('RETRY_PREPARED:', JSON.stringify({ attempt: retryPayload.retry_count, delay: strategy.retry_after_ms, strategy: strategy.type }));\n\nreturn [{ json: retryPayload }];"
+      },
+      "id": "node-retry-engine",
+      "name": "Retry Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 560]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [{
+            "value1": "={{ $json.retry_count || 0 }}",
+            "operation": "smallerEqual",
+            "value2": 3
+          }]
+        }
+      },
+      "id": "node-max-retry-check",
+      "name": "Max Retry Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2000, 560]
+    },
+    {
+      "parameters": {
+        "amount": "={{ Math.max(1, Math.ceil(($json.recovery_strategy.retry_after_ms || 1000) / 1000)) }}",
+        "unit": "seconds"
+      },
+      "id": "node-wait",
+      "name": "Adaptive Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [2220, 480],
+      "webhookId": "self-healing-wait-webhook"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.retry_config.url }}",
+        "method": "GET",
+        "options": {
+          "timeout": "={{ $json.retry_config.timeout }}",
+          "response": { "response": { "responseFormat": "json" } }
+        }
+      },
+      "id": "node-retry-http",
+      "name": "Retry HTTP Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [2440, 480],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== EXECUTION LOGGER =====\n// Writes a structured log entry for every recovery event\n// Author: Rana Ahmad — github.com/Ranahmad1\n\nconst ctx = $input.first().json;\n\nconst logEntry = {\n  log_id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,\n  timestamp: new Date().toISOString(),\n  workflow_id: ctx.workflow_id,\n  workflow_name: ctx.workflow_name,\n  execution_id: ctx.execution_id,\n  failed_node: ctx.failed_node,\n  error_type: ctx.error_type,\n  error_message: ctx.error_message,\n  status_code: ctx.status_code,\n  root_cause: ctx.root_cause,\n  risk_level: ctx.risk_level,\n  recovery_strategy: ctx.recovery_strategy?.type || ctx.strategy_applied,\n  strategy_action: ctx.recovery_strategy?.action,\n  retry_attempt: ctx.retry_count || 0,\n  delay_applied_ms: ctx.recovery_strategy?.retry_after_ms || 0,\n  outcome: ctx.status || 'COMPLETED',\n  escalated_to_human: ctx.status === 'AWAITING_HUMAN_APPROVAL' || ctx.status === 'ESCALATED',\n  total_recovery_time_ms: Date.now() - new Date(ctx.timestamp || Date.now()).getTime()\n};\n\nconsole.log('RECOVERY_LOG_ENTRY:', JSON.stringify(logEntry, null, 2));\n\n// Production integrations:\n// - Write to Postgres/MySQL via Database node\n// - Send to Datadog / Splunk via HTTP Request\n// - Append to Google Sheets\n// - Store in n8n static data\n\nreturn [{ json: logEntry }];"
+      },
+      "id": "node-logger",
+      "name": "Execution Logger",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2660, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== SUCCESS HANDLER =====\n// Handles the happy path — no error\nconst ctx = $input.first().json;\nreturn [{ json: {\n  status: 'SUCCESS',\n  message: 'Workflow completed successfully — no errors detected',\n  timestamp: new Date().toISOString(),\n  data: ctx\n}}];"
+      },
+      "id": "node-success",
+      "name": "Success Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 180]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{ "node": "HTTP Request Node", "type": "main", "index": 0 }]]
+    },
+    "HTTP Request Node": {
+      "main": [[{ "node": "Error Check", "type": "main", "index": 0 }]]
+    },
+    "Error Check": {
+      "main": [
+        [{ "node": "Error Catcher", "type": "main", "index": 0 }],
+        [{ "node": "Success Handler", "type": "main", "index": 0 }]
+      ]
+    },
+    "Error Catcher": {
+      "main": [[{ "node": "Root Cause Analyzer", "type": "main", "index": 0 }]]
+    },
+    "Root Cause Analyzer": {
+      "main": [[{ "node": "Strategy Generator", "type": "main", "index": 0 }]]
+    },
+    "Strategy Generator": {
+      "main": [[{ "node": "Safety Validator", "type": "main", "index": 0 }]]
+    },
+    "Safety Validator": {
+      "main": [
+        [{ "node": "Retry Engine", "type": "main", "index": 0 }],
+        [{ "node": "Human Escalation", "type": "main", "index": 0 }]
+      ]
+    },
+    "Retry Engine": {
+      "main": [[{ "node": "Max Retry Check", "type": "main", "index": 0 }]]
+    },
+    "Max Retry Check": {
+      "main": [
+        [{ "node": "Adaptive Wait", "type": "main", "index": 0 }],
+        [{ "node": "Human Escalation", "type": "main", "index": 0 }]
+      ]
+    },
+    "Adaptive Wait": {
+      "main": [[{ "node": "Retry HTTP Request", "type": "main", "index": 0 }]]
+    },
+    "Human Escalation": {
+      "main": [[{ "node": "Execution Logger", "type": "main", "index": 0 }]]
+    },
+    "Retry HTTP Request": {
+      "main": [[{ "node": "Execution Logger", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "author": "Rana Ahmad",
+    "authorUrl": "https://github.com/Ranahmad1",
+    "description": "Self-healing n8n workflow — auto error detection, root cause analysis, recovery strategy generation, safe retry with human approval gate"
+  },
+  "tags": [
+    { "name": "self-healing" },
+    { "name": "error-recovery" },
+    { "name": "automation" },
+    { "name": "rana-ahmad" },
+    { "name": "production-ready" }
+  ]
+}
