@@ -1,0 +1,53 @@
+{
+  "name": "Example: Data Pipeline with Self-Healing",
+  "description": "A batch data processing pipeline that uses self-healing to handle partial failures without stopping the entire run.",
+  "author": "Rana Ahmad — github.com/Ranahmad1",
+  "use_case": "Process a list of records from an API, enrich each one, and write to a database. If enrichment fails for some records, recover automatically instead of losing the whole batch.",
+  "nodes": [
+    {
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "parameters": { "path": "start-pipeline", "method": "POST" },
+      "note": "Receives a list of record IDs to process"
+    },
+    {
+      "name": "Split Into Items",
+      "type": "n8n-nodes-base.splitInBatches",
+      "parameters": { "batchSize": 10 },
+      "note": "Processes 10 records at a time to avoid overwhelming the API"
+    },
+    {
+      "name": "Enrich Record (API call)",
+      "type": "n8n-nodes-base.httpRequest",
+      "continueOnFail": true,
+      "parameters": {
+        "url": "=https://api.enrichment.com/v1/record/{{ $json.id }}",
+        "method": "GET",
+        "options": { "timeout": 8000 }
+      },
+      "note": "continueOnFail: true — if one record fails, continue with the rest"
+    },
+    {
+      "name": "→ Connect to Error Check in self_healing_workflow"
+    },
+    {
+      "name": "Write to Database (success path)",
+      "type": "n8n-nodes-base.postgres",
+      "note": "Only reached on successful enrichment or successful recovery"
+    }
+  ],
+  "recovery_behaviors": {
+    "RATE_LIMIT": "Backs off and retries — the batch pauses, then continues",
+    "NOT_FOUND": "Logs missing record ID, skips it, continues with rest of batch",
+    "SERVER_ERROR": "Retries up to 3 times with delay",
+    "INVALID_DATA": "Applies fallback values, writes partial record to DB with flag",
+    "AUTH_ERROR": "Stops entire batch and escalates to human"
+  },
+  "pipeline_config": {
+    "batch_size": 10,
+    "max_retries_per_item": 3,
+    "skip_on_not_found": true,
+    "escalate_on_auth_failure": true,
+    "log_all_events": true
+  }
+}
