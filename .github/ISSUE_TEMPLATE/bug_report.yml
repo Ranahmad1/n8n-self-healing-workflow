@@ -1,0 +1,48 @@
+name: Bug Report
+description: Report a broken error handler or recovery path
+title: "[BUG] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the details below.
+  - type: dropdown
+    id: error-type
+    attributes:
+      label: Which error type is affected?
+      options:
+        - RATE_LIMIT
+        - SERVER_ERROR
+        - TIMEOUT
+        - CONNECTION_REFUSED
+        - DNS_ERROR
+        - INVALID_DATA
+        - NOT_FOUND
+        - AUTH_ERROR
+        - CLIENT_ERROR
+        - UNKNOWN
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug — what did the workflow do vs what you expected?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: How can we reproduce this? Which test URL or error did you use?
+      placeholder: |
+        1. Set HTTP Request URL to https://httpstat.us/429
+        2. Run Manual Trigger
+        3. Recovery path did X instead of Y
+  - type: input
+    id: n8n-version
+    attributes:
+      label: n8n version
+      placeholder: e.g. 1.28.0
