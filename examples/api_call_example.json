@@ -1,0 +1,53 @@
+{
+  "name": "Example: API Call with Self-Healing",
+  "description": "Shows how to wrap a scheduled API call with the self-healing pattern. Replace the URL with your real endpoint.",
+  "author": "Rana Ahmad — github.com/Ranahmad1",
+  "usage": "Import into n8n alongside self_healing_workflow.json. Replace the HTTP Request URL with your real API.",
+  "pattern": "continueOnFail → Error Check → Error Catcher pipeline",
+  "nodes": [
+    {
+      "name": "Schedule Trigger (every 15 min)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 15 }]
+        }
+      },
+      "note": "Fires every 15 minutes. Change to your desired schedule."
+    },
+    {
+      "name": "Fetch Data from API",
+      "type": "n8n-nodes-base.httpRequest",
+      "continueOnFail": true,
+      "parameters": {
+        "url": "https://api.yourtarget.com/v1/data",
+        "method": "GET",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 10000,
+          "response": { "response": { "responseFormat": "json" } }
+        }
+      },
+      "note": "continueOnFail: true is CRITICAL — without it, errors halt execution before reaching the recovery pipeline."
+    },
+    {
+      "name": "→ Connect output to Error Check node in self_healing_workflow",
+      "note": "The Error Check node reads $json.error and $json.statusCode to decide if recovery is needed."
+    }
+  ],
+  "test_urls": {
+    "rate_limit": "https://httpstat.us/429",
+    "server_error": "https://httpstat.us/500",
+    "auth_error": "https://httpstat.us/401",
+    "not_found": "https://httpstat.us/404",
+    "timeout": "https://httpstat.us/408?sleep=15000"
+  },
+  "expected_recovery_behavior": {
+    "429": "Exponential backoff — waits ~1s, ~2s, ~4s between retries",
+    "500": "Wait + retry up to 3 times",
+    "401": "Immediately escalates to human — no auto-retry",
+    "404": "Logs the missing resource and skips",
+    "408": "Retries with doubled timeout"
+  }
+}
