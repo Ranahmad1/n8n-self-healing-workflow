@@ -1,0 +1,45 @@
+name: New Error Handler Request
+description: Propose a new error type and recovery strategy
+title: "[FEATURE] New error handler: "
+labels: ["enhancement", "new-error-type"]
+body:
+  - type: input
+    id: error-type
+    attributes:
+      label: Error type name
+      placeholder: e.g. GRAPHQL_ERROR or DB_CONNECTION_LOST
+    validations:
+      required: true
+  - type: textarea
+    id: detection
+    attributes:
+      label: How to detect this error
+      description: What HTTP code, error message pattern, or condition identifies this error?
+      placeholder: |
+        - HTTP 200 but response body contains `{ "errors": [...] }`
+        - Error message includes "ECONNRESET"
+    validations:
+      required: true
+  - type: textarea
+    id: strategy
+    attributes:
+      label: Proposed recovery strategy
+      description: What should the workflow do when this error occurs?
+      placeholder: |
+        - type: RETRY_WITH_DELAY
+        - retry_after_ms: 3000
+        - max_retries: 2
+        - can_auto_recover: true
+        - reason: GraphQL errors are usually transient query planning issues
+    validations:
+      required: true
+  - type: dropdown
+    id: risk-level
+    attributes:
+      label: Risk level
+      options:
+        - LOW — safe to auto-recover
+        - MEDIUM — auto-recover with caution
+        - HIGH — always require human approval
+    validations:
+      required: true
